@@ -82,14 +82,31 @@ def cmp_dir(changes: list,
             dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symlinks: bool):
     global processed, total
 
-    items_a = sorted(dir_a.glob("*"))
-    items_b = sorted(dir_b.glob("*"))
-    item_names_b = {x.name: x for x in items_b}
+    ex_a = None
+    ex_b = None
+    try:
+        items_a = sorted(dir_a.iterdir())
+    except Exception as e:
+        ex_a = type(e).__name__
+        items_a = []
+        print(f"Failed to list '{dir_a}' due to {ex_a}")
 
+    try:
+        items_b = sorted(dir_b.iterdir())
+    except Exception as e:
+        ex_b = type(e).__name__
+        items_b = []
+        print(f"Failed to list '{dir_b}' due to {ex_b}")
+
+    if ex_a != ex_b:
+        changes.append((str(dir_a), f"{ex_a} & {ex_b}"))
+        return
+
+    item_names_b = {x.name: x for x in items_b}
     total += len(items_a)
 
     cool_print(end="\033[u")
-    cool_print(end=f"{processed}/{total}")
+    cool_print(end=f"{processed}/{total} ")
 
     for item_a in items_a:
         processed += 1
