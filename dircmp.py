@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -108,35 +109,41 @@ def cmp_dir(changes: list,
     cool_print(end="\033[u")
     cool_print(end=f"{processed}/{total} ")
 
+    # match items in B-list to items in A-list
     for item_a in items_a:
         processed += 1
 
         if item_a.name not in item_names_b:
-            changes.append((str(item_a), "deleted"))
+            append_change(changes, item_a, "deleted")
             continue
         item_b = item_names_b[item_a.name]
         del item_names_b[item_a.name]
 
+        # handle symlinks
+        do_follow_this_symlink = follow_symlinks
+        if item_a.is_symlink():
+            if not item_b.is_symlink():
+                append_change(changes, item_a, "is_symlink")
+                continue
+            if do_follow_this_symlink and not str(item_a.resolve()).startswith(str(dir_a)):
+                print(f"Absolute symlink {item_a} points outside of searched filesystem, refusing to follow")
+                do_follow_this_symlink = False
+            if follow_symlinks and recursive and item_a.is_dir():
+                #print("symlink recurse", item_a)
+                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
+
         # compare stat
-        stat_a = item_a.stat(follow_symlinks=follow_symlinks)
-        stat_b = item_b.stat(follow_symlinks=follow_symlinks)
+        stat_a = item_a.stat(follow_symlinks=do_follow_this_symlink)
+        stat_b = item_b.stat(follow_symlinks=do_follow_this_symlink)
+        if not item_a.is_dir() and cmp_prop("stat.st_size", item_a, stat_a.st_size, stat_b.st_size, changes): continue
         if cmp_prop("stat.st_mode", item_a, stat_a.st_mode, stat_b.st_mode, changes): continue
-        if cmp_prop("stat.st_nlink", item_a, stat_a.st_nlink, stat_b.st_nlink, changes): continue
         if cmp_prop("stat.st_uid", item_a, stat_a.st_uid, stat_b.st_uid, changes): continue
         if cmp_prop("stat.st_gid", item_a, stat_a.st_gid, stat_b.st_gid, changes): continue
         if cmp_prop("stat.st_mtime", item_a, stat_a.st_mtime, stat_b.st_mtime, changes): continue
 
-        if item_a.is_symlink():
-            if not item_b.is_symlink():
-                changes.append((str(item_a), "is_symlink"))
-                continue
-            if follow_symlinks and recursive and item_a.is_dir():
-                #print("symlink recurse", item_a)
-                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks)
-
         if item_a.is_dir():
             if not item_b.is_dir():
-                changes.append((str(item_a), "is_dir"))
+                append_change(changes, item_a, "is_dir")
                 continue
             if recursive:
                 #print("recurse", item_a)
@@ -144,7 +151,7 @@ def cmp_dir(changes: list,
 
         if item_a.is_mount():
             if not item_b.is_mount():
-                changes.append((str(item_a), "is_mount"))
+                append_change(changes, item_a, "is_mount")
                 continue
             if external:
                 #print("mount recurse", item_a)
@@ -162,9 +169,16 @@ def cmp_dir(changes: list,
     return changes
 
 
+def append_change(changes: list, item_a: Path, prop_name: str):
+    path_a = str(item_a)
+    if item_a.is_dir():
+        path_a += os.sep
+    changes.append((path_a, prop_name))
+
+
 def cmp_prop(prop_name: str, item_a: Path, prop_a, prop_b, changes: list) -> bool:
     if prop_a != prop_b:
-        changes.append((str(item_a), prop_name))
+        append_change(changes, item_a, prop_name + f"({prop_a}|{prop_b})")
         return True
     return False
 

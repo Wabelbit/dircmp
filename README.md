@@ -20,6 +20,8 @@ options:
 ```
 You probably want all the options most of the time, e.g. `dircomp.py -res ~/first_folder ~/second_folder` will do.
 
+Be careful with `--follow-symlinks` though: if you encounter `FileNotFoundError`, you should remove that option.
+
 ## Why?
 
 Honestly this is just a dirty little script I threw together because I needed a quick way of checking whether two directories are roughly in sync.
