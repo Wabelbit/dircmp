@@ -6,10 +6,20 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
+RESTORE_CURSOR = "\033[u"
+STORE_CURSOR = "\033[s"
+GREY = "\033[0;90m"
+RED = "\033[0;31m"
+ORANGE = "\033[0;33m"
+GREEN = "\033[0;32m"
+YELLOW = "\033[0;93m"
+NO_COLOUR = "\033[0m"
+
 is_tty = sys.stdout.isatty()
 
 
-def cool_print(*args, **kwargs):
+def tty_print(*args, **kwargs):
     if is_tty:
         print(*args, **kwargs)
 
@@ -39,29 +49,40 @@ def main(dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symli
     changes = []
     ex = None
     try:
-        cool_print(end="\033[s")
+        tty_print(end=STORE_CURSOR)
         cmp_dir(changes, dir_a, dir_b, recursive, external, follow_symlinks)
     except BaseException as e:
         ex = e
-        cool_print(end="\033[u")
+        tty_print(end=RESTORE_CURSOR)
+        tty_print(end=ORANGE)
+        print(f"Warning: search aborted by {type(ex).__name__}, results will be incomplete!")
+        tty_print(end=NO_COLOUR)
         sys.stdout.flush()
-        print(f"Warning: search aborted by {type(ex).__name__}, results will be incomplete!", file=sys.stderr)
+
         print(ex, file=sys.stderr)
         sys.stderr.flush()
     else:
-        cool_print(end="\033[u")
+        tty_print(end=RESTORE_CURSOR)
     finally:
+        if processed == total:
+            tty_print(end=GREEN)
+        else:
+            tty_print(end=YELLOW)
         print(f"Processed {processed} of {total} found items.", end=' ')
 
         # check for results
         if len(changes) == 0:
             print()
+            tty_print(end=GREEN)
             print("No differences discovered, directory contents seem superficially identical.")
+            tty_print(end=NO_COLOUR)
             rethrow(ex)
             return 0
 
         # print differences
+        tty_print(end=YELLOW)
         print(f"Discovered {len(changes)} difference{'' if len(changes) == 1 else 's'}:")
+        tty_print(end=NO_COLOUR)
         print()
         changeset: tuple
         for changeset in changes:
@@ -80,7 +101,8 @@ def main(dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symli
 
 
 def cmp_dir(changes: list,
-            dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symlinks: bool):
+            dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symlinks: bool,
+            recursion_depth: int = 0):
     global processed, total
 
     ex_a = None
@@ -90,24 +112,32 @@ def cmp_dir(changes: list,
     except Exception as e:
         ex_a = type(e).__name__
         items_a = []
+        tty_print(end=RED)
         print(f"Failed to list '{dir_a}' due to {ex_a}")
+        tty_print(end=NO_COLOUR)
 
     try:
         items_b = sorted(dir_b.iterdir())
     except Exception as e:
         ex_b = type(e).__name__
         items_b = []
+        tty_print(end=RED)
         print(f"Failed to list '{dir_b}' due to {ex_b}")
+        tty_print(end=NO_COLOUR)
 
     if ex_a != ex_b:
-        changes.append((str(dir_a), f"{ex_a} & {ex_b}"))
+        append_change(changes, dir_a, f"{ex_a} & {ex_b}")
         return
 
     item_names_b = {x.name: x for x in items_b}
     total += len(items_a)
 
-    cool_print(end="\033[u")
-    cool_print(end=f"{processed}/{total} ")
+    # print progress
+    tty_print(end=RESTORE_CURSOR)
+    tty_print(f"{GREY}Searching {len(items_a)} ({processed}/{total}), depth {recursion_depth}, discovered {len(changes)}{NO_COLOUR}", end=' ')
+    if is_tty and len(items_a) >= 1000:
+        # make sure our status update is on-screen if the search could take a while
+        sys.stdout.flush()
 
     # match items in B-list to items in A-list
     for item_a in items_a:
@@ -147,7 +177,7 @@ def cmp_dir(changes: list,
                 continue
             if recursive:
                 #print("recurse", item_a)
-                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks)
+                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
 
         if item_a.is_mount():
             if not item_b.is_mount():
@@ -155,7 +185,7 @@ def cmp_dir(changes: list,
                 continue
             if external:
                 #print("mount recurse", item_a)
-                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks)
+                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
 
         if cmp_prop("is_fifo", item_a, item_a.is_fifo(), item_b.is_fifo(), changes): continue
         if cmp_prop("is_block_device", item_a, item_a.is_block_device(), item_b.is_block_device(), changes): continue
