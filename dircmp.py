@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+from stat import S_ISDIR, S_ISLNK, S_ISSOCK, S_ISBLK, S_ISCHR, S_ISFIFO
 
 
 RESTORE_CURSOR = "\033[u"
@@ -150,47 +151,61 @@ def cmp_dir(changes: list,
         del item_names_b[item_a.name]
 
         # handle symlinks
-        do_follow_this_symlink = follow_symlinks
-        if item_a.is_symlink():
-            if not item_b.is_symlink():
+        stat_a = item_a.stat(follow_symlinks=False)
+        stat_b = item_b.stat(follow_symlinks=False)
+        if S_ISLNK(stat_a.st_mode):
+            # check if B is also a symlink
+            if not S_ISLNK(stat_b.st_mode):
                 append_change(changes, item_a, "is_symlink")
                 continue
-            if do_follow_this_symlink and not str(item_a.resolve()).startswith(str(dir_a)):
-                print(f"Absolute symlink {item_a} points outside of searched filesystem, refusing to follow")
-                do_follow_this_symlink = False
-            if follow_symlinks and recursive and item_a.is_dir():
-                #print("symlink recurse", item_a)
-                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
 
-        # compare stat
-        stat_a = item_a.stat(follow_symlinks=do_follow_this_symlink)
-        stat_b = item_b.stat(follow_symlinks=do_follow_this_symlink)
-        if not item_a.is_dir() and cmp_prop("stat.st_size", item_a, stat_a.st_size, stat_b.st_size, changes): continue
-        if cmp_prop("stat.st_mode", item_a, stat_a.st_mode, stat_b.st_mode, changes): continue
+            # do not escape out of original search-path
+            if follow_symlinks:
+                if not str(item_a.resolve()).startswith(str(dir_a)):
+                    print(f"Absolute symlink at {item_a} points outside of searched filesystem, refusing to follow")
+                else:
+                    # resolve symlink
+                    stat_a = item_a.stat(follow_symlinks=True)
+                    stat_b = item_b.stat(follow_symlinks=True)
+
+        # compare file size
+        if not S_ISDIR(stat_a.st_mode):
+            # different filesystem drivers have different understandings of 'size' on directories => only apply to files
+            if cmp_prop("stat.st_size", item_a, stat_a.st_size, stat_b.st_size, changes): continue
+
+        # compare some more relevant metadata
         if cmp_prop("stat.st_uid", item_a, stat_a.st_uid, stat_b.st_uid, changes): continue
         if cmp_prop("stat.st_gid", item_a, stat_a.st_gid, stat_b.st_gid, changes): continue
         if cmp_prop("stat.st_mtime", item_a, stat_a.st_mtime, stat_b.st_mtime, changes): continue
 
-        if item_a.is_dir():
-            if not item_b.is_dir():
+        # handle subdirectories
+        if S_ISDIR(stat_a.st_mode):
+            if not S_ISDIR(stat_b.st_mode):
                 append_change(changes, item_a, "is_dir")
                 continue
             if recursive:
+                # run comparison for this subdirectory
                 #print("recurse", item_a)
                 cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
 
+        # handle mount-points
         if item_a.is_mount():
             if not item_b.is_mount():
                 append_change(changes, item_a, "is_mount")
                 continue
-            if external:
-                #print("mount recurse", item_a)
-                cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
+            # this didn't really work well and also doesn't really make sense for what we're trying to achieve...
+            #if external:
+            #    #print("mount recurse", item_a)
+            #    cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
 
-        if cmp_prop("is_fifo", item_a, item_a.is_fifo(), item_b.is_fifo(), changes): continue
-        if cmp_prop("is_block_device", item_a, item_a.is_block_device(), item_b.is_block_device(), changes): continue
-        if cmp_prop("is_char_device", item_a, item_a.is_char_device(), item_b.is_char_device(), changes): continue
-        if cmp_prop("is_socket", item_a, item_a.is_socket(), item_b.is_socket(), changes): continue
+        # compare less relevant modes
+        if cmp_prop("is_fifo", item_a, S_ISFIFO(stat_a.st_mode), S_ISFIFO(stat_b.st_mode), changes): continue
+        if cmp_prop("is_block_device", item_a, S_ISBLK(stat_a.st_mode), S_ISBLK(stat_b.st_mode), changes): continue
+        if cmp_prop("is_char_device", item_a, S_ISCHR(stat_a.st_mode), S_ISCHR(stat_b.st_mode), changes): continue
+        if cmp_prop("is_socket", item_a, S_ISSOCK(stat_a.st_mode), S_ISSOCK(stat_b.st_mode), changes): continue
+
+        # catch other modes
+        if cmp_prop("stat.st_mode", item_a, stat_a.st_mode, stat_b.st_mode, changes): continue
 
     # anything left over in the item_names_b array is something that doesn't exist in dir_a (reverse difference)
     for item_b in item_names_b.values():
@@ -218,8 +233,8 @@ if __name__ == '__main__':
     parser.add_argument("dir_a", type=Path, help="First directory")
     parser.add_argument("dir_b", type=Path, help="Second directory")
     parser.add_argument("--recursive", "-r", action="store_true", default=False, help="Recurse into subdirectories")
-    parser.add_argument("--external", "-e", action="store_true", default=False, help="Descend into mount points")
+    #parser.add_argument("--external", "-e", action="store_true", default=False, help="Descend into mount points")
     parser.add_argument("--follow-symlinks", "-s", action="store_true", default=False, help="Follow symlinks")
     parser.add_argument("--output", "-o", type=Path, help="Results output file (JSON format). Useful if many differences are expected")
     args = parser.parse_args()
-    sys.exit(main(args.dir_a, args.dir_b, args.recursive, args.external, args.follow_symlinks, args.output))
+    sys.exit(main(args.dir_a, args.dir_b, args.recursive, False, args.follow_symlinks, args.output))
