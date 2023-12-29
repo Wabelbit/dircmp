@@ -1,7 +1,9 @@
 #!/usr/bin/python3
 import argparse
+import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 is_tty = sys.stdout.isatty()
 
@@ -11,33 +13,69 @@ def cool_print(*args, **kwargs):
         print(*args, **kwargs)
 
 
+def rethrow(ex: Optional[BaseException]):
+    if ex is not None:
+        print()
+        sys.stdout.flush()
+        raise ex
+
+
 processed = 0
 total = 0
 
 
-def main(dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symlinks: bool) -> int:
+def main(dir_a: Path, dir_b: Path, recursive: bool, external: bool, follow_symlinks: bool, output: Optional[Path]) -> int:
     if not dir_a.is_dir():
-        print(f"{dir_a} is not a directory")
+        print(f"{dir_a} is not a directory", file=sys.stderr)
         return 2
     if not dir_b.is_dir():
-        print(f"{dir_b} is not a directory")
+        print(f"{dir_b} is not a directory", file=sys.stderr)
         return 2
 
     if not is_tty:
         print("Hint: running in script-mode, no progress output will be printed to stdout", file=sys.stderr)
 
     changes = []
+    ex = None
     try:
         cool_print(end="\033[s")
         cmp_dir(changes, dir_a, dir_b, recursive, external, follow_symlinks)
-    finally:
+    except BaseException as e:
+        ex = e
         cool_print(end="\033[u")
-        print(f"{total} items in total. Found differences:")
+        sys.stdout.flush()
+        print(f"Warning: search aborted by {type(ex).__name__}, results will be incomplete!", file=sys.stderr)
+        print(ex, file=sys.stderr)
+        sys.stderr.flush()
+    else:
+        cool_print(end="\033[u")
+    finally:
+        print(f"Processed {processed} of {total} found items.", end=' ')
+
+        # check for results
+        if len(changes) == 0:
+            print()
+            print("No differences discovered, directory contents seem superficially identical.")
+            rethrow(ex)
+            return 0
+
+        # print differences
+        print(f"Discovered {len(changes)} difference{'' if len(changes) == 1 else 's'}:")
+        print()
         changeset: tuple
         for changeset in changes:
             print(f"{changeset[0]}\t\t{changeset[1]}")
+        print()
 
-        sys.stdout.flush()
+        # save differences in file, if requested
+        if output:
+            print(f"Writing results to '{output}'...", end=' ')
+            with output.open("w", encoding="UTF-8") as f:
+                json.dump(changes, f, ensure_ascii=False, indent=2)
+                print(file=f)
+            print("Done.")
+
+        rethrow(ex)
 
 
 def cmp_dir(changes: list,
@@ -51,18 +89,18 @@ def cmp_dir(changes: list,
     total += len(items_a)
 
     cool_print(end="\033[u")
-    cool_print(f"{processed}/{total}")
+    cool_print(end=f"{processed}/{total}")
 
     for item_a in items_a:
         processed += 1
 
         if item_a.name not in item_names_b:
-            changes.append((item_a, "deleted"))
+            changes.append((str(item_a), "deleted"))
             continue
         item_b = item_names_b[item_a.name]
         del item_names_b[item_a.name]
 
-        # compare lstat
+        # compare stat
         stat_a = item_a.stat(follow_symlinks=follow_symlinks)
         stat_b = item_b.stat(follow_symlinks=follow_symlinks)
         if cmp_prop("stat.st_mode", item_a, stat_a.st_mode, stat_b.st_mode, changes): continue
@@ -73,7 +111,7 @@ def cmp_dir(changes: list,
 
         if item_a.is_symlink():
             if not item_b.is_symlink():
-                changes.append((item_a, "is_symlink"))
+                changes.append((str(item_a), "is_symlink"))
                 continue
             if follow_symlinks and recursive and item_a.is_dir():
                 #print("symlink recurse", item_a)
@@ -81,15 +119,15 @@ def cmp_dir(changes: list,
 
         if item_a.is_dir():
             if not item_b.is_dir():
-                changes.append((item_a, "is_dir"))
+                changes.append((str(item_a), "is_dir"))
                 continue
-            if recursive and item_a.is_dir():
+            if recursive:
                 #print("recurse", item_a)
                 cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks)
 
         if item_a.is_mount():
             if not item_b.is_mount():
-                changes.append((item_a, "is_mount"))
+                changes.append((str(item_a), "is_mount"))
                 continue
             if external:
                 #print("mount recurse", item_a)
@@ -100,15 +138,16 @@ def cmp_dir(changes: list,
         if cmp_prop("is_char_device", item_a, item_a.is_char_device(), item_b.is_char_device(), changes): continue
         if cmp_prop("is_socket", item_a, item_a.is_socket(), item_b.is_socket(), changes): continue
 
+    # anything left over in the item_names_b array is something that doesn't exist in dir_a (reverse difference)
     for item_b in item_names_b.values():
-        changes.append(("missing", item_b))
+        changes.append(("missing", str(item_b)))
 
     return changes
 
 
 def cmp_prop(prop_name: str, item_a: Path, prop_a, prop_b, changes: list) -> bool:
     if prop_a != prop_b:
-        changes.append((item_a, prop_name))
+        changes.append((str(item_a), prop_name))
         return True
     return False
 
@@ -120,5 +159,6 @@ if __name__ == '__main__':
     parser.add_argument("--recursive", "-r", action="store_true", default=False, help="Recurse into subdirectories")
     parser.add_argument("--external", "-e", action="store_true", default=False, help="Descend into mount points")
     parser.add_argument("--follow-symlinks", "-s", action="store_true", default=False, help="Follow symlinks")
+    parser.add_argument("--output", "-o", type=Path, help="Results output file (JSON format). Useful if many differences are expected")
     args = parser.parse_args()
-    sys.exit(main(args.dir_a, args.dir_b, args.recursive, args.external, args.follow_symlinks))
+    sys.exit(main(args.dir_a, args.dir_b, args.recursive, args.external, args.follow_symlinks, args.output))
