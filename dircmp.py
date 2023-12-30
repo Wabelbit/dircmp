@@ -168,16 +168,6 @@ def cmp_dir(changes: list,
                     stat_a = item_a.stat(follow_symlinks=True)
                     stat_b = item_b.stat(follow_symlinks=True)
 
-        # compare file size
-        if not S_ISDIR(stat_a.st_mode):
-            # different filesystem drivers have different understandings of 'size' on directories => only apply to files
-            if cmp_prop("stat.st_size", item_a, stat_a.st_size, stat_b.st_size, changes): continue
-
-        # compare some more relevant metadata
-        if cmp_prop("stat.st_uid", item_a, stat_a.st_uid, stat_b.st_uid, changes): continue
-        if cmp_prop("stat.st_gid", item_a, stat_a.st_gid, stat_b.st_gid, changes): continue
-        if cmp_prop("stat.st_mtime", item_a, stat_a.st_mtime, stat_b.st_mtime, changes): continue
-
         # handle subdirectories
         if S_ISDIR(stat_a.st_mode):
             if not S_ISDIR(stat_b.st_mode):
@@ -187,6 +177,15 @@ def cmp_dir(changes: list,
                 # run comparison for this subdirectory
                 #print("recurse", item_a)
                 cmp_dir(changes, item_a, item_b, recursive, external, follow_symlinks, recursion_depth + 1)
+        else:
+            # compare file size only for files, not folders, because different filesystem drivers
+            # have different understandings of what 'size' is on directories, which makes it incomparable
+            if cmp_prop("stat.st_size", item_a, stat_a.st_size, stat_b.st_size, changes): continue
+
+        # compare some more relevant metadata
+        if cmp_prop("stat.st_uid", item_a, stat_a.st_uid, stat_b.st_uid, changes): continue
+        if cmp_prop("stat.st_gid", item_a, stat_a.st_gid, stat_b.st_gid, changes): continue
+        if cmp_prop("stat.st_mtime", item_a, stat_a.st_mtime, stat_b.st_mtime, changes): continue
 
         # handle mount-points
         if item_a.is_mount():
